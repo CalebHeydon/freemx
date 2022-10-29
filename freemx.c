@@ -41,13 +41,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define FREEMX_BACKLOG 		128
 #define FREEMX_BUFFER_SIZE	990 + 1
 
-pthread_mutex_t stderr_mutex;
-
 typedef struct _handle_client_args
 {
 	int client_fd;
 	struct sockaddr_in client_addr;
 } handle_client_args;
+
+char fqdn[254];
+pthread_mutex_t stderr_mutex;
+
+void print_usage(void)
+{
+	fprintf(stderr, "usage: freemx <fqdn>\n");
+}
 
 void *handle_client(void *args)
 {
@@ -67,10 +73,6 @@ void *handle_client(void *args)
 	FILE *client_write = fdopen(client_fd, "wb");
 	FILE *client_read = fdopen(client_fd, "rb");
 
-	const char *welcome = "220 mail.caleb.engineer ESMTP freemx\r\n";
-	fwrite(welcome, 1, strlen(welcome), client_write);
-	fflush(client_write);
-
 	char *buffer = malloc(FREEMX_BUFFER_SIZE);
 	if (buffer == NULL)
 	{
@@ -80,6 +82,10 @@ void *handle_client(void *args)
 		goto FREEMX_HANDLE_CLIENT_DONE;
 	}
 	memset(buffer, 0, FREEMX_BUFFER_SIZE);
+
+	snprintf(buffer, FREEMX_BUFFER_SIZE, "220 %s SMTP freemx\r\n", fqdn);
+	fwrite(buffer, 1, strlen(buffer), client_write);
+	fflush(client_write);
 
 	int state = 0;
 	while (true)
@@ -100,7 +106,9 @@ void *handle_client(void *args)
 			break;
 		}
 
-		bool exit = 0;
+		bool exit = false;
+		bool invalidCommand = false;
+
 		switch (state)
 		{
 		case 0:
@@ -111,13 +119,10 @@ void *handle_client(void *args)
 				state = 1;
 				const char *ok = "250\r\n";
 				fwrite(ok, 1, strlen(ok), client_write);
+				fflush(client_write);
 			}
 			else
-			{
-				const char *error = "502\r\n";
-				fwrite(error, 1, strlen(error), client_write);
-			}
-			fflush(client_write);
+				invalidCommand = true;
 			break;
 		}
 		default:
@@ -127,6 +132,13 @@ void *handle_client(void *args)
 
 		if (exit)
 			break;
+
+		if (invalidCommand)
+		{
+			const char *error = "502\r\n";
+			fwrite(error, 1, strlen(error), client_write);
+			fflush(client_write);
+		}
 	}
 
 	free(buffer);
@@ -135,12 +147,22 @@ FREEMX_HANDLE_CLIENT_DONE:
 	fclose(client_write);
 	fclose(client_read);
 
+
 	return NULL;
 }
 
 int main(int argc, char **argv)
 {
 	fprintf(stderr, "freemx version %s\nCopyright (c) 2022, Caleb Heydon\n", FREEMX_VERSION);
+
+	if (argc < 2)
+	{
+		print_usage();
+		return -1;
+	}
+
+	size_t fqdn_len = strlen(argv[1]);
+	memcpy(fqdn, argv[1], fqdn_len < sizeof(fqdn) ? fqdn_len : sizeof(fqdn));
 
 	if (pthread_mutex_init(&stderr_mutex, NULL) != 0)
 	{
