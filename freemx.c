@@ -40,6 +40,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define FREEMX_PORT		25
 #define FREEMX_BACKLOG 		128
 #define FREEMX_BUFFER_SIZE	990 + 1
+#define FREEMX_ADDRESS_SIZE	320
 
 typedef struct _handle_client_args
 {
@@ -88,6 +89,8 @@ void *handle_client(void *args)
 	fflush(client_write);
 
 	int state = 0;
+	char *from = NULL;
+
 	while (true)
 	{
 		if (fgets(buffer, FREEMX_BUFFER_SIZE - 1, client_read) == NULL)
@@ -107,7 +110,8 @@ void *handle_client(void *args)
 		}
 
 		bool exit = false;
-		bool invalidCommand = false;
+		bool invalid_command = false;
+		bool syntax_error = false;
 
 		switch (state)
 		{
@@ -122,7 +126,57 @@ void *handle_client(void *args)
 				fflush(client_write);
 			}
 			else
-				invalidCommand = true;
+				invalid_command = true;
+			break;
+		}
+		case 1:
+		{
+			substr = strstr(buffer, "MAIL ");
+			if (substr == buffer)
+			{
+				state = 2;
+
+				substr = strstr(buffer, "FROM:<");
+				if (substr == NULL)
+				{
+					syntax_error = true;
+					break;
+				}
+
+				substr += strlen("FROM:<");
+				char *end = strstr(buffer, ">");
+				if (end == NULL)
+				{
+					syntax_error = true;
+					break;
+				}
+
+				from = malloc(FREEMX_ADDRESS_SIZE + 1);
+				if (from == NULL)
+				{
+					pthread_mutex_lock(&stderr_mutex);
+					fprintf(stderr, "Out of memory\n");
+					pthread_mutex_unlock(&stderr_mutex);
+
+					free(buffer);
+					free(from);
+					goto FREEMX_HANDLE_CLIENT_DONE;
+				}
+				memset(from, 0, FREEMX_ADDRESS_SIZE + 1);
+
+				if (end - substr > FREEMX_ADDRESS_SIZE)
+				{
+					syntax_error = true;
+					break;
+				}
+				memcpy(from, substr, end - substr);
+
+				const char *ok = "250\r\n";
+				fwrite(ok, 1, strlen(ok), client_write);
+				fflush(client_write);
+			}
+			else
+				invalid_command = true;
 			break;
 		}
 		default:
@@ -133,20 +187,29 @@ void *handle_client(void *args)
 		if (exit)
 			break;
 
-		if (invalidCommand)
+		if (invalid_command)
 		{
 			const char *error = "502\r\n";
 			fwrite(error, 1, strlen(error), client_write);
 			fflush(client_write);
+			continue;
+		}
+
+		if (syntax_error)
+		{
+			const char *error = "501\r\n";
+			fwrite(error, 1, strlen(error), client_write);
+			fflush(client_write);
+			continue;
 		}
 	}
 
 	free(buffer);
+	free(from);
 
 FREEMX_HANDLE_CLIENT_DONE:
 	fclose(client_write);
 	fclose(client_read);
-
 
 	return NULL;
 }
